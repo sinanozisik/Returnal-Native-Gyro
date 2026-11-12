@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Present Bluetooth DualSense and DualSense Edge input to scePad as the USB report it already accepts, and send its trigger and vibration writes back as Bluetooth report 0x31. Other controllers are left alone. A Bluetooth Edge is reported as a DualSense so the library's product check can open it.
+- Edge L4, R4, L5 and R5 can each press another controller button. The button chosen for gyro, or for left-stick snap, keeps that row on Gyro and does not emit the mapped press.
+- Right stick gains D-pad. It reports the stronger direction and does not turn the camera.
+- Left stick snap turns once, on the activator press, toward the direction the stick is held. Release does nothing and the stick keeps moving. The gyro button is not offered as the activator.
+- Bluetooth motion is read with Raw Input and is not given an output report. USB still uses the shared HID handle.
+
 ## 1.0.5
 
 - Recover gyro after controller disconnection or a switch between native input and Steam Input, without replacing a healthy motion stream. Clear stale motion, button and calibration state during handoff.

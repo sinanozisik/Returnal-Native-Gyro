@@ -1,4 +1,5 @@
 #include "rg/settings.hpp"
+#include "rg/remap.hpp"
 #include <charconv>
 #include <algorithm>
 #include <cmath>
@@ -39,8 +40,36 @@ ConfigResult parseConfig(std::string_view text) {
         for(const auto& f:settingsSchema())if(key==f.name){field=&f;break;}
         if(!field){r.warnings.emplace_back("Unknown key: "+std::string(key));continue;}
         if(!seen.emplace(key).second)r.warnings.emplace_back("Duplicate key: "+std::string(key));
+        if(key=="BtHapticsChannelPair"){
+            int mapped=0; bool known=val=="auto"||val=="0";
+            if(val=="12"||val=="1"){mapped=1;known=true;}
+            else if(val=="34"||val=="2"){mapped=2;known=true;}
+            if(!known){r.warnings.emplace_back("Invalid BtHapticsChannelPair; restored 34");mapped=2;}
+            r.settings.BtHapticsChannelPair=mapped;
+            continue;
+        }
+        if(key=="BtHapticsModeFlags"){
+            int mapped=0; bool known=val=="lpf"||val=="0";
+            if(val=="full"||val=="1"){mapped=1;known=true;}
+            if(!known){r.warnings.emplace_back("Invalid BtHapticsModeFlags; restored lpf");mapped=0;}
+            r.settings.BtHapticsModeFlags=mapped;
+            continue;
+        }
+        if(key=="BtSpeakerCounterStyle"){
+            int mapped=0; bool known=val=="0x32"||val=="32"||val=="0";
+            if(val=="0x35"||val=="35"||val=="1"){mapped=1;known=true;}
+            if(!known){r.warnings.emplace_back("Invalid BtSpeakerCounterStyle; restored 0x32");mapped=0;}
+            r.settings.BtSpeakerCounterStyle=mapped;
+            continue;
+        }
         double value{}; auto [ptr,ec]=std::from_chars(val.data(),val.data()+val.size(),value);
-        if(ec!=std::errc{}||ptr!=val.data()+val.size()||!std::isfinite(value)||value<field->minimum||value>field->maximum||(field->integral&&std::floor(value)!=value)) {
+        const bool parsed=ec==std::errc{}&&ptr==val.data()+val.size()&&std::isfinite(value);
+        const bool inRange=parsed&&value>=field->minimum&&value<=field->maximum&&(!field->integral||std::floor(value)==value);
+        if(parsed&&!inRange&&key=="LeftSnapForwardDeadZoneDeg"){
+            value=std::clamp(std::round(value),0.0,350.0);
+            field->set(r.settings,value);
+            r.warnings.emplace_back("LeftSnapForwardDeadZoneDeg clamped to "+std::to_string(static_cast<int>(value)));
+        }else if(!inRange){
             field->set(r.settings,field->defaultValue);
             r.warnings.emplace_back("Invalid "+std::string(key)+"; restored default");
         } else field->set(r.settings,value);
@@ -74,6 +103,10 @@ ConfigResult parseConfig(std::string_view text) {
     validateFamily(r.settings.GyroStickSensor,{0,14,15,16,25});
     validateFamily(r.settings.GyroGripSensor,{0,17,18,19,26});
     validateFamily(r.settings.GyroStick,{0,3,4,27,28});
+    for(int* mapped:{&r.settings.MapL4,&r.settings.MapR4,&r.settings.MapL5,&r.settings.MapR5})if(!remapTargetAllowed(*mapped)){*mapped=0;r.warnings.emplace_back("Invalid Edge button target reset to Off");}
+    auto snapAllowed=[](int id){return id==0||id==1||id==2||id==3||id==4||id==7||id==10||id==11||(id>=20&&id<=23);};
+    if(!snapAllowed(r.settings.LeftSnap)){r.settings.LeftSnap=0;r.warnings.emplace_back("Invalid left stick snap button reset to Off");}
+    else if(r.settings.LeftSnap&&r.settings.LeftSnap==r.settings.GyroButton){r.settings.LeftSnap=0;r.warnings.emplace_back("Left stick snap released the gyro button");}
     r.settings.ActivationButton=0;r.settings.RatchetButton=0;r.settings.LinkXY=false;r.settings.ConfigVersion=4;r.settings.DisableWhileRightStick=false;
     if(r.settings.AccelerationEndDps<=r.settings.AccelerationStartDps){
         r.settings.AccelerationStartDps=0;r.settings.AccelerationEndDps=75;

@@ -259,7 +259,7 @@ void calibrationTick(Runtime& r){
 void buildRows(Obj target,const Settings& settings){
  auto rowClass=findClass(L"/Game/UI/SystemMenu/WBP_SettingBase.WBP_SettingBase_C"),spinnerClass=findClass(L"/Game/UI/SystemMenu/WBP_SettingSpinner.WBP_SettingSpinner_C");
  if(!rowClass||!spinnerClass)throw std::runtime_error("Native setting templates are not loaded");
- for(const auto* optionPtr:nativeVisibleOptions(labelsButtons)){
+ for(const auto* optionPtr:nativeVisibleOptions(labelsButtons,&settings)){
   const auto& option=*optionPtr;
   auto id=wide(option.key);auto rowName=L"ReturnalGyroRow_"+id,spinnerName=L"ReturnalGyroValue_"+id;
   Obj row=a.createWidget(target,rowClass,newName(rowName.c_str())),spinner=a.createWidget(target,spinnerClass,newName(spinnerName.c_str()));if(!row||!spinner)throw std::runtime_error("Cannot create native gyro row");
@@ -273,7 +273,7 @@ void buildRows(Obj target,const Settings& settings){
  }
 }
 void refreshRows(Obj target,const Settings& settings){
- auto desired=nativeVisibleOptions(labelsButtons);bool same=desired.size()==rows.size();
+ auto desired=nativeVisibleOptions(labelsButtons,&settings);bool same=desired.size()==rows.size();
  if(same)for(size_t i=0;i<rows.size();++i)if(rows[i].option!=desired[i]){same=false;break;}
  if(!same){
   // Returnal navigates panel child indices even for collapsed widgets. Only supported
@@ -286,7 +286,7 @@ void refreshRows(Obj target,const Settings& settings){
    if(a.focused(row.widget)||a.focusedChildren(row.widget)){hadFocus=true;anchor=row.option->key;}}
   for(auto& row:rows)if(!a.removeChild(page,row.widget))throw std::runtime_error("Cannot remove obsolete gyro row");
   rows.clear();lastFocused=nullptr;buildRows(target,settings);
-  int selected=nativeFocusIndex(anchor,labelsButtons);
+  int selected=nativeFocusIndex(anchor,labelsButtons,&settings);
   if(active)write<int>(target,offset(target,L"ScrollBarIndex",2036),selected);
   if(cachedOurs)write<Obj>(target,offset(target,L"LastFocusedWidget",2536),rows[selected].widget);
   if(hadFocus&&active)a.setFocus(rows[selected].widget);
@@ -340,6 +340,8 @@ if(!steamCalibrationRow(*row.option)&&index!=row.index&&index>=0&&index<menuOpti
 
 }else{int desired=menuOptionIndex(settings,*row.option);if(desired!=row.index){call(row.spinner,L"SetSelectedIndexWithoutEnabledCheck",&desired,sizeof(desired));row.index=desired;}}}
  if(changed){r.update(settings);r.log("Native gyro options changed");}
+ static int shownGyroButton=-1,shownSnap=-1;
+ if(settings.GyroButton!=shownGyroButton||settings.LeftSnap!=shownSnap){bool snapShown=shownSnap>0,snapNow=settings.LeftSnap!=0;bool snapChanged=shownSnap>=0&&snapShown!=snapNow;shownGyroButton=settings.GyroButton;shownSnap=settings.LeftSnap;if(snapChanged)refreshRows(controller,settings);for(auto& row:rows)if(remapOptionSource(*row.option)||std::string_view(row.option->key)=="LeftSnap"){populateValues(row.spinner,*row.option,settings);int selected=menuOptionIndex(settings,*row.option);row.index=selected;call(row.spinner,L"SetSelectedIndexWithoutEnabledCheck",&selected,sizeof(selected));}}
  auto sampleAt=r.sampleTime.load();auto now=monotonicNs();
  bool sourceReady=sampleAt&&now>=sampleAt&&now-sampleAt<200'000'000;
  auto help=localize(external?"calibration.steamHelp":"description.AutomaticCalibration",language);

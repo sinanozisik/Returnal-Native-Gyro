@@ -4,6 +4,8 @@
 #include "rg/calibration_policy.hpp"
 #include "rg/steam_hid_hotplug.hpp"
 #include "rg/native_input_owner.hpp"
+#include "rg/remap.hpp"
+#include "rg/bt_haptic_hook.hpp"
 #include <thread>
 #include <sstream>
 #include <iomanip>
@@ -70,6 +72,12 @@ void sensorLoop(Runtime& r){
         auto capabilities=backend->info();r.controllerIdentityAt.store(monotonicNs(),std::memory_order_release);r.controllerLayout.store(capabilities.layout);r.controllerDiagram.store(capabilities.diagram);r.controllerTouchpad.store(capabilities.touchpad);
         auto previousButtons=r.availableButtons.exchange(capabilities.availableButtons);
         if(previousButtons!=capabilities.availableButtons)r.log("Gyro button capabilities="+std::to_string(capabilities.availableButtons));
+        r.controllerBluetooth.store(capabilities.connectionKnown&&capabilities.bluetooth,std::memory_order_release);
+        r.controllerProduct.store(capabilities.product,std::memory_order_release);
+        ensureBtHapticHook();
+        auto physical=sample->buttons;
+        sample->buttons=withRemappedButtons(physical,settings);
+        r.physicalButtons.store(physical,std::memory_order_release);
         r.controllerButtons.store(sample->buttons,std::memory_order_release);
         auto now=monotonicNs();auto gameAt=r.gameTime.load(std::memory_order_acquire);
         auto flags=r.gameFlags.load();
@@ -91,13 +99,68 @@ void sensorLoop(Runtime& r){
         }
     }
 }
+LPTOP_LEVEL_EXCEPTION_FILTER previousCrash{};
+void exceptionSite(void* address, char* site, std::size_t siteBytes){
+    HMODULE module=nullptr;
+    char name[96]="?";
+    auto rva=reinterpret_cast<unsigned long long>(address);
+    if(GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,static_cast<LPCWSTR>(address),&module)&&module){
+        wchar_t path[260]{};
+        if(GetModuleFileNameW(module,path,260)){
+            const wchar_t* slash=wcsrchr(path,L'\\');
+            WideCharToMultiByte(CP_UTF8,0,slash?slash+1:path,-1,name,80,nullptr,nullptr);
+            rva-=reinterpret_cast<unsigned long long>(module);
+        }
+    }
+    sprintf_s(site,siteBytes,"%s+0x%llX",name,rva);
+}
+void noteException(const char* kind, EXCEPTION_POINTERS* info){
+    if(!info||!info->ExceptionRecord||!runtime)return;
+    char site[160]{};
+    exceptionSite(info->ExceptionRecord->ExceptionAddress,site,sizeof site);
+    char line[320]{};
+    sprintf_s(line,"%s code=%08X %s",kind,static_cast<unsigned>(info->ExceptionRecord->ExceptionCode),site);
+    runtime->flushCrash(line);
+}
+bool fatalException(DWORD code, DWORD flags){
+    if(code==0xC0000409||code==0xC0000374||code==0xC00000FD)return true;
+    if(flags&EXCEPTION_NONCONTINUABLE)return code!=0xE06D7363;
+    return false;
+}
+LONG WINAPI vectoredCrash(EXCEPTION_POINTERS* info){
+    if(!info||!info->ExceptionRecord)return EXCEPTION_CONTINUE_SEARCH;
+    const DWORD code=info->ExceptionRecord->ExceptionCode;
+    if(!fatalException(code,info->ExceptionRecord->ExceptionFlags))return EXCEPTION_CONTINUE_SEARCH;
+    static std::atomic<unsigned> seen{0};
+    const unsigned bit=code==0xC0000409?1u:code==0xC0000374?2u:4u;
+    unsigned previous=seen.load();
+    while((previous&bit)==0&&!seen.compare_exchange_weak(previous,previous|bit)){}
+    if(previous&bit)return EXCEPTION_CONTINUE_SEARCH;
+    noteException("vectored",info);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+LONG WINAPI crashFilter(EXCEPTION_POINTERS* info){
+    noteException("unhandled",info);
+    return previousCrash?previousCrash(info):EXCEPTION_CONTINUE_SEARCH;
+}
 DWORD WINAPI boot(void* argument){
     auto module=static_cast<HMODULE>(argument);
     // Pin before installing hooks; F10 suspends functionality without unsafe in-flight DLL unloading.
     HMODULE pinned{};GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_PIN,reinterpret_cast<LPCWSTR>(&boot),&pinned);
     runtime=new Runtime;
     wchar_t path[32768]{};GetModuleFileNameW(module,path,32768);runtime->directory=std::filesystem::path(path).parent_path();
-    runtime->logFile.open(runtime->directory/"ReturnalGyro-runtime.log",std::ios::trunc);
+    {
+        const auto logPath=runtime->directory/"ReturnalGyro-runtime.log";
+        const auto rotated=runtime->directory/"ReturnalGyro-runtime.log.1";
+        std::error_code logError;
+        if(std::filesystem::exists(logPath,logError)&&!logError&&std::filesystem::file_size(logPath,logError)>0){
+            std::filesystem::remove(rotated,logError);
+            std::filesystem::rename(logPath,rotated,logError);
+        }
+        runtime->logFile.open(logPath,std::ios::trunc);
+    }
+    previousCrash=SetUnhandledExceptionFilter(crashFilter);
+    AddVectoredExceptionHandler(1,vectoredCrash);
     auto config=runtime->directory/"ReturnalGyro.ini";
     auto loaded=loadConfig(config);runtime->update(loaded.settings);
     for(auto& warning:loaded.warnings)runtime->log(warning);

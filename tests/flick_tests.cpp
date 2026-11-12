@@ -78,7 +78,22 @@ int main(){try{
   check(rg::flickEnabled(mode,{true,false,true})==(mode==2),"Alt-Fire counts as aiming");
   check(!rg::flickEnabled(mode,{false})&&!rg::flickEnabled(mode,{true,false,false,true}),"menus and suspension pass through stick");
  }
- auto s=rg::parseConfig("FlickStick=2\nFlickSpinDurationMs=1000\n").settings;check(s.FlickStick==2&&s.FlickSpinDurationMs==1000,"flick settings parse");rg::resetGyroOptions(s);check(s.FlickStick==0&&s.FlickSpinDurationMs==150,"native reset restores flick defaults");
+ auto s=rg::parseConfig("FlickStick=3\nFlickSpinDurationMs=1000\n").settings;check(s.FlickStick==3&&s.FlickSpinDurationMs==1000,"dpad mode parses");rg::resetGyroOptions(s);check(s.FlickStick==0&&s.FlickSpinDurationMs==150,"native reset restores flick defaults");
+ rg::FlickStickProcessor pad;rg::GameplayState playing{true},paused{false};
+ check(pad.observeGameplay(3,playing)&&pad.processGameplay(1,0,.01,true,playing,150,3)==0,"dpad owns the right stick without turning the camera");
+ check(!pad.observeGameplay(3,paused),"dpad leaves the stick alone outside gameplay");
+ near(rg::stickSnapYaw(0,1),0,"forward stick snaps nowhere");
+ near(rg::stickSnapYaw(1,0),90,"right stick snaps a quarter turn");
+ near(rg::stickSnapYaw(0.2f,0),0,"a slack stick has no snap");
+ near(rg::leftSnapYaw(0,-1.f),0,"stored forward snaps to facing");
+ near(rg::leftSnapYaw(0,1.f),180,"stored back snaps around");
+ near(rg::leftSnapYaw(1.f,0),90,"snap keeps right");
+ check(!rg::leftSnapBlockedByForwardCone(0,0),"zero cone does not block forward");
+ check(rg::leftSnapBlockedByForwardCone(0,45)&&rg::leftSnapBlockedByForwardCone(22.5,45)&&!rg::leftSnapBlockedByForwardCone(23,45),"45 degree cone blocks only the forward wedge");
+ check(rg::leftSnapBlockedByForwardCone(174,350)&&!rg::leftSnapBlockedByForwardCone(176,350)&&!rg::leftSnapBlockedByForwardCone(180,350),"350 degree cone leaves only the back window");
+ rg::LeftSnapSpin timed;double snapSum=0;for(int i=0;i<60;++i)snapSum+=timed.advance(i==0,90,1.0/60,1000);near(snapSum,90,"snap uses the flick ease over one second");
+ rg::LeftSnapSpin instant;near(instant.advance(true,90,0.016,0),90,"zero duration stays instant");near(instant.advance(false,0,0.016,0),0,"a finished snap adds nothing");
+ check(rg::stickDpad(0,1)==1&&rg::stickDpad(0,-1)==2&&rg::stickDpad(-1,0)==3&&rg::stickDpad(1,0)==4&&rg::stickDpad(.2f,.2f)==0,"dpad uses the stronger axis");
  check(rg::localize("ActivationButton","fr")=="BOUTON DU GYROSCOPE","requested button label");
  check(rg::localize("description.ActivationMode","fr")=="Définit comment le gyroscope s’active.","requested exact mode help");
  std::cout<<"PASS: flick angles, timing, circles, hysteresis, cancellation, aim/Alt-Fire gating and defaults\n";

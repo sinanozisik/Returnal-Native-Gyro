@@ -6,6 +6,34 @@ namespace rg {
 // Returnal axis capture: up is negative, down positive. Flick math uses up positive.
 inline float flickVerticalFromGameAxis(float value){return -value;}
 inline bool flickEnabled(int mode,GameplayState game){return game.allowed&&!game.overlay&&(mode==2||(mode==1&&!game.aiming&&!game.altFire));}
+// Up is positive. Below half deflection there is no direction. 1 up, 2 down, 3 left, 4 right.
+inline int stickDpad(float x,float y){if(!std::isfinite(x)||!std::isfinite(y))return 0;float ax=std::fabs(x),ay=std::fabs(y);if(ax<0.5f&&ay<0.5f)return 0;if(ax>=ay)return x>=0.f?4:3;return y>=0.f?1:2;}
+// One yaw step, in degrees, toward the stick. Forward is zero. The rim is not tracked.
+inline double stickSnapYaw(float x,float y){if(!std::isfinite(x)||!std::isfinite(y)||std::hypot(x,y)<0.5)return 0;return std::atan2(x,y)*180/std::numbers::pi;}
+// leftY is stored with the flick sign (game forward becomes negative). Snap undoes that so forward stays yaw 0.
+inline double leftSnapYaw(float x,float storedY){return stickSnapYaw(x,-storedY);}
+// coneDegrees is the full cone around forward. 0 disables it. 45 blocks ±22.5 degrees. 350 leaves ±5 degrees around back.
+inline bool leftSnapBlockedByForwardCone(double yawDegrees,int coneDegrees){if(coneDegrees<=0||!std::isfinite(yawDegrees))return false;double angle=std::fabs(yawDegrees);if(angle>180)angle=360-angle;return angle<=coneDegrees*0.5;}
+inline double flickEase(double t){t=std::clamp(t,0.0,1.0);return 1-(1-t)*(1-t)*(1-t);}
+// Same ease and duration as the flick's opening turn. 0 ms applies the whole angle now.
+class LeftSnapSpin {
+ double spin_{},elapsed_{},duration_{};
+public:
+ void reset(){spin_=elapsed_=duration_=0;}
+ double advance(bool start,double angle,double dt,int durationMs){
+  double result=0;
+  if(start){
+   double remaining=duration_>0?spin_*(1-flickEase(elapsed_/duration_)):0;
+   if(!std::isfinite(angle))angle=0;
+   spin_=remaining+angle;elapsed_=0;duration_=std::clamp(durationMs,0,1000)/1000.0;
+   if(duration_==0){result+=spin_;spin_=0;}
+  }
+  if(duration_>0&&elapsed_<duration_&&std::isfinite(dt)&&dt>0&&dt<=0.25){
+   double before=flickEase(elapsed_/duration_);elapsed_=std::min(duration_,elapsed_+dt);result+=spin_*(flickEase(elapsed_/duration_)-before);
+  }
+  return result;
+ }
+};
 // Validated EInputTriggerStateFlags: FocusAim=1, AltFirePrep=4, AltFire=8.
 // Keep gameplay safety gates, but do not wait for the character's exit animation.
 inline GameplayState flickGameplayForTrigger(GameplayState game,unsigned flags){game.aiming=(flags&1)!=0;game.altFire=(flags&12)!=0;return game;}
@@ -14,17 +42,19 @@ class FlickStickProcessor {
  bool initialized_{},armed_{},edge_{},aimPaused_{};
  double previousAngle_{},spin_{},elapsed_{},duration_{};
  int previousMode_{-1},previousDuration_{-1};
- static double ease(double t){t=std::clamp(t,0.0,1.0);return 1-(1-t)*(1-t)*(1-t);}
+ static double ease(double t){return flickEase(t);}
 public:
  void reset(){initialized_=armed_=edge_=aimPaused_=false;spin_=elapsed_=duration_=0;previousMode_=previousDuration_=-1;}
  // Axis capture and camera processing share this gate so aim suspension retains
  // its reason. UI/focus/mode changes still require a neutral stick before flicking.
  bool observeGameplay(int mode,GameplayState game){
+  if(mode==3)return game.allowed&&!game.overlay;
   if(mode==1&&game.allowed&&!game.overlay&&(game.aiming||game.altFire)){reset();aimPaused_=true;return false;}
   if(!flickEnabled(mode,game)){reset();return false;}
   return true;
  }
  double processGameplay(float x,float y,double dt,bool fresh,GameplayState game,int durationMs,int mode){
+  if(mode==3)return 0;
   if(!fresh){reset();return 0;}
   if(!observeGameplay(mode,game))return 0;
   bool resumeHeld=mode==1&&aimPaused_;aimPaused_=false;

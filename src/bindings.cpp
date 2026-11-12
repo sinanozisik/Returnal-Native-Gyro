@@ -6,6 +6,9 @@
 #include "rg/aim_gate.hpp"
 #include "rg/short_press.hpp"
 #include "rg/native_input_owner.hpp"
+#include "rg/remap.hpp"
+#include "rg/scepad_bridge.hpp"
+#include "rg/bt_haptic_hook.hpp"
 #include <MinHook.h>
 #include <bcrypt.h>
 #include <array>
@@ -65,7 +68,8 @@ struct Bindings {
     Object altRequestProperty{};Unary altInTrigger{};
     Object screenProperty{},controllerProperty{};
     int pawn{},follow{},save{},screen{},controller{},control{};
-    const void *mouseX{},*mouseY{},*rightX{},*rightY{};
+    const void *mouseX{},*mouseY{},*rightX{},*rightY{},*leftX{},*leftY{},*touchX{},*touchY{},*touchClick{},*menuKey{},*shareKey{};
+    std::array<const void*,5> dpad{};
     std::array<const void*,12> buttons{};
     void*(*copyKey)(void*,const void*){};void(*destroyKey)(void*){};
     Name name(const wchar_t* text){Name result{};makeName(&result,text,0);return result;}
@@ -289,7 +293,7 @@ GameplayState flickGameplay(Object pc,GameplayState animated){
 }
 using AxisInput=bool(*)(Object,const void*,float,float,int,bool);
 AxisInput originalAxis{};
-Object stickOwner{};float stickX{},stickY{};std::uint64_t stickAt{};
+Object stickOwner{};float stickX{},stickY{},leftX{},leftY{};std::uint64_t stickAt{},leftAt{};
 FlickStickProcessor flick;std::uint64_t lastFlickFrame{},flickGeneration{};
 bool inputAxis(Object pc,const void* key,float value,float dt,int samples,bool gamepad){
  auto& r=*runtime;
@@ -297,6 +301,9 @@ bool inputAxis(Object pc,const void* key,float value,float dt,int samples,bool g
   auto keyName=read<Bindings::Name>(const_cast<void*>(key),0);
   bool horizontal=keyName==read<Bindings::Name>(const_cast<void*>(b.rightX),0);
   bool vertical=keyName==read<Bindings::Name>(const_cast<void*>(b.rightY),0);
+  bool leftHorizontal=keyName==read<Bindings::Name>(const_cast<void*>(b.leftX),0);
+  bool leftVertical=keyName==read<Bindings::Name>(const_cast<void*>(b.leftY),0);
+  if(leftHorizontal||leftVertical){if(leftHorizontal)leftX=value;else leftY=flickVerticalFromGameAxis(value);leftAt=monotonicNs();}
   if(horizontal||vertical){
    auto generation=r.deviceGeneration.load(std::memory_order_acquire);
    if(stickOwner!=pc||flickGeneration!=generation){stickOwner=pc;flickGeneration=generation;stickX=stickY=0;stickAt=0;flick.reset();}
@@ -332,6 +339,17 @@ void rotation(Object pc,float dt){
     bool freshStick=stickOwner==pc&&now>=stickAt&&(now-stickAt<200'000'000||std::hypot(stickX,stickY)<0.65f);
     double flickDelta=flick.processGameplay(stickX,stickY,dt,freshStick,flickGameplay(pc,game),settings.FlickSpinDurationMs,settings.FlickStick);
     delta.yawDegrees+=flickDelta;r.flickYaw=static_cast<float>(flickDelta);
+    static std::uint32_t previousButtons{};
+    static LeftSnapSpin snapSpin;
+    auto buttons=r.controllerButtons.load(std::memory_order_acquire);
+    int snap=settings.LeftSnap==settings.GyroButton?0:settings.LeftSnap;
+    bool freshLeft=now>=leftAt&&now-leftAt<200'000'000;
+    bool snapStart=allowed&&snap&&freshLeft&&gyroButtonHeld(buttons,snap)&&!gyroButtonHeld(previousButtons,snap);
+    double snapAngle=snapStart?leftSnapYaw(leftX,leftY):0;
+    if(snapStart&&leftSnapBlockedByForwardCone(snapAngle,settings.LeftSnapForwardDeadZoneDeg))snapStart=false;
+    if(!allowed)snapSpin.reset();
+    else delta.yawDegrees+=snapSpin.advance(snapStart,snapStart?snapAngle:0,dt,settings.FlickSpinDurationMs);
+    previousButtons=buttons;
     // RotationInput is the pre-camera FRotator in degrees, validated by UpdateRotation instructions.
     // Keep a double residual because the game's accumulator itself is float.
     static double residualYaw=0,residualPitch=0;
@@ -356,8 +374,44 @@ void updateCalibrationContext(Runtime& r,Object pc){
     r.calibrationMenuAt.store(eligible?monotonicNs():0,std::memory_order_release);
 }
 using ActorTick=void(*)(Object,float,int,void*);ActorTick originalActorTick{};
+void applyDpad(Object pc){
+    auto& r=*runtime;if(!reflectionReady.load(std::memory_order_acquire)||r.suspended.load()||!b.is(pc,b.pcClass)||!b.local(pc))return;
+    auto now=monotonicNs();auto settings=r.snapshot();auto game=currentGameplay(pc);
+    bool fresh=stickOwner==pc&&now>=stickAt&&now-stickAt<200'000'000;
+    int dir=settings.FlickStick==3&&fresh&&game.allowed&&!game.overlay?stickDpad(stickX,stickY):0;
+    static int held{};static Object owner{};
+    if(owner!=pc){held=0;owner=pc;}
+    if(dir==held)return;
+    auto send=[&](int id,bool down){auto key=b.dpad[id];if(!key)return;alignas(8) std::array<std::byte,24> copy{};b.copyKey(copy.data(),key);inputKey(pc,copy.data(),down?0:1,1.f,true);};
+    if(held)send(held,false);
+    if(dir)send(dir,true);
+    held=dir;
+}
+void applyRemaps(Object pc){
+    auto& r=*runtime;
+    if(!reflectionReady.load(std::memory_order_acquire)||r.suspended.load()||!b.is(pc,b.pcClass)||!b.local(pc))return;
+    // Bluetooth already carries the mapped button in the USB report. A second key would double-press.
+    if(r.controllerBluetooth.load(std::memory_order_acquire))return;
+    auto now=monotonicNs();auto at=r.sampleTime.load(std::memory_order_acquire);
+    bool fresh=at&&now>=at&&now-at<200'000'000;
+    auto want=remapDesired(r.snapshot(),r.physicalButtons.load(std::memory_order_acquire),fresh);
+    auto wanted=[&](int id){return std::find(want.begin(),want.end(),id)!=want.end();};
+    auto sendKey=[&](const void* key,bool down){if(!key)return;alignas(8) std::array<std::byte,24> copy{};b.copyKey(copy.data(),key);inputKey(pc,copy.data(),down?0:1,1.f,true);};
+    auto sendAxis=[&](const void* key,float value){if(!key)return;alignas(8) std::array<std::byte,24> copy{};b.copyKey(copy.data(),key);originalAxis(pc,copy.data(),value,0.016f,1,true);};
+    static std::array<bool,remapTargets.size()> held{};static Object owner{};
+    if(owner!=pc){held={};owner=pc;}
+    for(size_t i=0;i<remapTargets.size();++i){int id=remapTargets[i];if(!id)continue;bool down=wanted(id);
+        if(id==5){if(down){sendAxis(b.touchX,0.01f);sendAxis(b.touchY,0.01f);}else if(held[i]){sendAxis(b.touchX,0);sendAxis(b.touchY,0);}held[i]=down;continue;}
+        if(down==held[i])continue;
+        if(!down&&id<12&&fresh&&gyroButtonHeld(r.physicalButtons.load(std::memory_order_acquire),id)){held[i]=false;continue;}
+        const void* key=id<12?b.buttons[id]:id==kTouchClick?b.touchClick:id==kMenuButton?b.menuKey:b.shareKey;
+        sendKey(key,down);held[i]=down;
+    }
+}
 void actorTick(Object pc,float dt,int tickType,void* tickFunction){
     updateCalibrationContext(*runtime,pc);
+    applyRemaps(pc);
+    applyDpad(pc);
     originalActorTick(pc,dt,tickType,tickFunction);
 }
 // Change glyph selection only. The native action lookup and its FKey are forwarded unchanged.
@@ -400,7 +454,28 @@ bool installBindings(Runtime& r){
         {L"Returnal-UMG-Win64-Shipping.dll","b9b7c4575fbf37cb9efafe1a41d201d2d2b2c0918f47216ad5d3efefe8ce7a46"},
         {L"Returnal-WinDualSense-Win64-Shipping.dll","6fada9b5ed922e0fdfe80dad0f64188a7a7f99278a5049a673af534bd495dc9b"},
         {L"Returnal-WinDualShock-Win64-Shipping.dll","3757e6cf104f8ce922e68c29bb81aa0d82363b6fae0b72ec76afb4c9febbeb6d"}};
-    for(int attempt=0;attempt<600;++attempt){bool all=true;for(auto& profile:profiles)if(!module(profile.module))all=false;if(all)break;Sleep(100);}
+    const wchar_t* senseName=L"Returnal-WinDualSense-Win64-Shipping.dll";
+    const bool senseAlready=module(senseName)!=nullptr;
+    bool sensePatched=false;
+    for(int attempt=0;attempt<600;++attempt){
+        if(!sensePatched){
+            if(HMODULE sense=module(senseName)){
+                r.log(std::string("WinDualSense module seen on wait attempt ")+std::to_string(attempt)+(senseAlready&&attempt==0?" (already loaded)":""));
+                installBridgeForModule(sense,"WinDualSense",false);
+                sensePatched=true;
+            }
+        }
+        bool all=true;for(auto& profile:profiles)if(!module(profile.module))all=false;if(all)break;Sleep(100);
+    }
+    if(!sensePatched)r.log("WinDualSense bridge skipped: module not loaded");
+#if RG_ENABLE_SCEPAD_BRIDGE
+    HMODULE pad=GetModuleHandleW(L"libScePad.dll");
+    if(!pad)pad=LoadLibraryW(L"libScePad.dll");
+    if(!pad)r.log("libScePad bridge skipped: module not loaded");
+    else installBridgeForModule(pad,"libScePad",true);
+#else
+    r.log("libScePad bridge off");
+#endif
     for(auto& profile:profiles)if(!module(profile.module)||digest(module(profile.module))!=profile.hash){r.log("Unsupported module SHA-256; no game hooks installed");return false;}
     auto senseModule=module(L"Returnal-WinDualSense-Win64-Shipping.dll"),shockModule=module(L"Returnal-WinDualShock-Win64-Shipping.dll");
     auto senseEvents=reinterpret_cast<unsigned char*>(senseModule)+0x6000;
@@ -443,9 +518,17 @@ bool installBindings(Runtime& r){
     b.gamepadKey=symbol<decltype(b.gamepadKey)>(input,"?IsGamepadKey@FKey@@QEBA_NXZ");
     b.mouseX=symbol<void*>(input,"?MouseX@EKeys@@2UFKey@@B");b.mouseY=symbol<void*>(input,"?MouseY@EKeys@@2UFKey@@B");
     b.rightX=symbol<void*>(input,"?Gamepad_RightX@EKeys@@2UFKey@@B");b.rightY=symbol<void*>(input,"?Gamepad_RightY@EKeys@@2UFKey@@B");
+    b.leftX=symbol<void*>(input,"?Gamepad_LeftX@EKeys@@2UFKey@@B");b.leftY=symbol<void*>(input,"?Gamepad_LeftY@EKeys@@2UFKey@@B");
+    b.touchX=symbol<void*>(input,"?Gamepad_Special_Left_X@EKeys@@2UFKey@@B");b.touchY=symbol<void*>(input,"?Gamepad_Special_Left_Y@EKeys@@2UFKey@@B");
+    b.touchClick=symbol<void*>(input,"?Gamepad_Special_Left@EKeys@@2UFKey@@B");
+    b.menuKey=symbol<void*>(input,"?Gamepad_Special_Right@EKeys@@2UFKey@@B");
+    // Returnal's pad driver has no separate Create key. Share uses the touchpad button key.
+    b.shareKey=b.touchClick;
+    const char* dpadNames[]={"","Gamepad_DPad_Up","Gamepad_DPad_Down","Gamepad_DPad_Left","Gamepad_DPad_Right"};
+    for(int id=1;id<=4;++id)b.dpad[id]=symbol<void*>(input,(std::string("?")+dpadNames[id]+"@EKeys@@2UFKey@@B").c_str());
     b.copyKey=symbol<decltype(b.copyKey)>(input,"??0FKey@@QEAA@AEBU0@@Z");
     b.destroyKey=symbol<decltype(b.destroyKey)>(input,"??1FKey@@QEAA@XZ");
-    for(auto [id,key]:std::array<std::pair<int,const char*>,7>{{{1,"Gamepad_LeftShoulder"},{2,"Gamepad_RightShoulder"},{3,"Gamepad_LeftThumbstick"},{4,"Gamepad_RightThumbstick"},{7,"Gamepad_FaceButton_Right"},{10,"Gamepad_FaceButton_Left"},{11,"Gamepad_FaceButton_Top"}}}){
+    for(auto [id,key]:std::array<std::pair<int,const char*>,8>{{{1,"Gamepad_LeftShoulder"},{2,"Gamepad_RightShoulder"},{3,"Gamepad_LeftThumbstick"},{4,"Gamepad_RightThumbstick"},{6,"Gamepad_FaceButton_Bottom"},{7,"Gamepad_FaceButton_Right"},{10,"Gamepad_FaceButton_Left"},{11,"Gamepad_FaceButton_Top"}}}){
      auto exportName=std::string("?")+key+"@EKeys@@2UFKey@@B";b.buttons[id]=symbol<void*>(input,exportName.c_str());
     }
     auto keyTarget=symbol<void*>(engine,"?InputKey@APlayerController@@UEAA_NUFKey@@W4EInputEvent@@M_N@Z");
@@ -491,6 +574,7 @@ bool installBindings(Runtime& r){
     constexpr unsigned char namedConnectionPrefix[]={0x48,0x89,0x5c,0x24,0x08,0x48,0x89,0x6c,0x24,0x18,0x56,0x57,0x41,0x56};
     if(std::memcmp(usageTarget,usagePrefix,sizeof(usagePrefix))||std::memcmp(connectionTarget,connectionPrefix,sizeof(connectionPrefix))||std::memcmp(namedConnectionTarget,namedConnectionPrefix,sizeof(namedConnectionPrefix)))throw std::runtime_error("Controller identity notification instructions changed; no hooks installed");
     if(MH_Initialize()!=MH_OK)throw std::runtime_error("MinHook initialization failed");
+    ensureBtHapticHook();
     std::vector<void*> targets;
     auto create=[&](void* target,void* detour,void** original){if(!hook(target,detour,original))return false;targets.push_back(target);return true;};
     bool ok=create(genericKeyIconTarget,reinterpret_cast<void*>(&genericKeyIcon),reinterpret_cast<void**>(&originalGenericKeyIcon))&&create(keyIconTarget,reinterpret_cast<void*>(&keyIcon),reinterpret_cast<void**>(&originalKeyIcon))&&create(actorTickTarget,reinterpret_cast<void*>(&actorTick),reinterpret_cast<void**>(&originalActorTick))&&create(localVirtualTarget,reinterpret_cast<void*>(&localVirtual),reinterpret_cast<void**>(&originalLocalVirtual))&&create(keyTarget,reinterpret_cast<void*>(&inputKey),reinterpret_cast<void**>(&originalKey))&&create(aimTarget,reinterpret_cast<void*>(&aimTriggerChanged),reinterpret_cast<void**>(&originalAimTrigger))&&create(axisTarget,reinterpret_cast<void*>(&inputAxis),reinterpret_cast<void**>(&originalAxis))&&create(rotationTarget,reinterpret_cast<void*>(&rotation),reinterpret_cast<void**>(&originalRotation))&&create(setTarget,reinterpret_cast<void*>(&setInput),reinterpret_cast<void**>(&originalSet))&&create(commitTarget,reinterpret_cast<void*>(&commitInput),reinterpret_cast<void**>(&originalCommit))&&create(mouseTarget,reinterpret_cast<void*>(&mouseMove),reinterpret_cast<void**>(&originalMouse));

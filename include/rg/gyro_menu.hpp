@@ -9,11 +9,12 @@ namespace rg {
 struct GyroOption { const char* key;double step;int count; };
 std::span<const GyroOption> gyroOptions();
 std::span<const GyroOption> nativeGyroOptions();
-std::vector<const GyroOption*> nativeVisibleOptions(std::uint32_t available);
-int nativeFocusIndex(std::string_view key,std::uint32_t available);
+std::vector<const GyroOption*> nativeVisibleOptions(std::uint32_t available,const Settings* settings=nullptr);
+int nativeFocusIndex(std::string_view key,std::uint32_t available,const Settings* settings=nullptr);
 int bindingFamily(int id);
 int optionFamily(const GyroOption&);
-bool nativeOptionVisible(const GyroOption&,std::uint32_t);
+int remapOptionSource(const GyroOption&);
+bool nativeOptionVisible(const GyroOption&,std::uint32_t,const Settings* settings=nullptr);
 std::vector<int> bindingFamilies(std::uint32_t available);
 std::vector<int> bindingChoices(int family,std::uint32_t available);
 int nativeOptionCount(const Settings&,const GyroOption&,std::uint32_t);

@@ -34,9 +34,13 @@ struct Runtime {
     std::atomic<bool> externalCalibration{};
     std::atomic<std::uint64_t> controllerIdentityAt{}, deviceGeneration{};
     std::atomic<std::uint32_t> controllerButtons{};
+    std::atomic<std::uint32_t> physicalButtons{};
+    std::atomic<bool> controllerBluetooth{};
+    std::atomic<unsigned> controllerProduct{};
     Settings snapshot();
     void update(const Settings&);
     void log(const std::string&);
+    void flushCrash(const std::string&);
 };
 // Process-lifetime runtime: hooked modules must never be unloaded while a game call is in flight.
 extern Runtime* runtime;
