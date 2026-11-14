@@ -14,7 +14,8 @@ Existing `ReturnalGyro.ini` settings survive updates; defaults are created when 
 
 - With Steam Input: use a **Gamepad** layout and set Steam's gyro behavior to **None**. The mod reads Steam motion; Steam owns calibration. Normal game inputs still follow the game's input system.
 - Without Steam Input: automatic selection falls back to passive Sony HID or SDL motion sensors. For direct sensors, the native settings footer offers recalibration after a five-second countdown. Place the controller on a stable surface.
-- Physically tested during development: DualSense Edge over USB, original Steam Controller over USB, and Steam Controller 2 via its Puck. Other transports/controllers, including Steam Deck built-in controls, are not certified.
+- Physically tested during development: DualSense Edge over USB and Bluetooth, original Steam Controller over USB, and Steam Controller 2 via its Puck. Other transports/controllers, including Steam Deck built-in controls, are not certified.
+- DualSense and DualSense Edge over Bluetooth without Steam Input: the game's controller library receives the input as the USB report it already accepts, and its trigger and vibration writes are sent back over Bluetooth. HD haptics and the controller speaker are played over Bluetooth from the game's own audio. Motion is read with Raw Input. Other controllers and USB connections are unchanged. Physically tested with a DualSense Edge only.
 
 The motion source is selected automatically and rediscovered when the controller disconnects or switches between native input and Steam Input. Hotplug, input ownership and audio stability were validated with a DualSense Edge over USB. The Steam HID visibility recovery is guarded for the inspected Windows Steam overlay build; unsupported overlay versions are left unchanged and may still require a game restart.
 
@@ -28,6 +29,10 @@ Selected game buttons respond to a tap shorter than 200 ms on release; gyro resp
 - Player Space, World Space, Local Yaw and Local Roll.
 - Aim-command activation, independent sensitivity axes and aim/Alt-Fire multipliers.
 - Exponential gyro smoothing from 0 to 500 ms in 5 ms steps, acceleration presets and Flick Stick.
+- Right stick modes: game camera, hip-fire Flick Stick, Flick Stick, or D-pad (`FlickStick` 0-3). D-pad reports the stronger direction and does not turn the camera.
+- Left-stick snap (`LeftSnap`): pressing the chosen button turns once toward the held left-stick direction. Release does nothing and the stick keeps moving. A forward dead zone (`LeftSnapForwardDeadZoneDeg`, default 45) ignores directions close to straight ahead; snap uses the Flick Stick spin duration.
+- DualSense Edge back buttons: L4, R4, L5 and R5 can each press another controller button (`MapL4`, `MapR4`, `MapL5`, `MapR5`). A back button used for gyro or snap keeps that role and does not send the mapped press.
+- Bluetooth HD haptics and speaker for DualSense and Edge (`BtHaptics`, `BtSpeaker`, `BtSpeakerVolume`; on by default). Turning `BtHaptics` off keeps classic rumble.
 - Automatic calibration: Off, Menus Only or Any Time for direct sensors; Steam retains calibration ownership for Steam motion.
 - Controller-family button prompts and controller illustrations, including Nintendo and DualSense through Steam Input.
 - Mixed-input guards for controller presentation and mouse-triggered rumble interruption.
@@ -47,6 +52,6 @@ For gameplay issues, include the mod version, controller/connection, Steam Input
 
 ## Source and changes
 
-See [CHANGELOG.md](CHANGELOG.md) and [BUILDING.md](BUILDING.md). This repository contains runtime sources, translations, tests and the build/package tools. It excludes development probes, dumps, personal settings and compiled binaries. SDL is downloaded separately with SHA-256 verification. The modified GamepadMotionHelpers header and required MinHook source are included for review.
+See [CHANGELOG.md](CHANGELOG.md) and [BUILDING.md](BUILDING.md). This repository contains runtime sources, translations, tests and the build/package tools. It excludes development probes, dumps, personal settings and compiled binaries. SDL is downloaded separately with SHA-256 verification. The modified GamepadMotionHelpers header, required MinHook source and unmodified Opus 1.5.2 source (for Bluetooth speaker audio) are included for review.
 
 All license texts and dependency credits are collected in [LICENSES.txt](LICENSES.txt). Original mod code is MIT licensed; dependencies retain their own terms.

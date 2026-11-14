@@ -12,12 +12,13 @@ ctest --test-dir build -C Release --output-on-failure
 python tools/package.py
 ```
 
-The SDL bootstrap downloads the official SDL 3.4.16 VC development archive and verifies the pinned SHA-256 before extracting it into ignored `_deps/`. An existing official ZIP can be supplied as `python tools/fetch_sdl.py --archive <path>`. MinHook and GamepadMotionHelpers source are included. All origins and hashes are in `dependencies.json`; full license texts are in `LICENSES.txt`.
+The SDL bootstrap downloads the official SDL 3.4.16 VC development archive and verifies the pinned SHA-256 before extracting it into ignored `_deps/`. An existing official ZIP can be supplied as `python tools/fetch_sdl.py --archive <path>`. MinHook, GamepadMotionHelpers and Opus 1.5.2 source are included. Opus is the unmodified official release, built as a static library. All origins and hashes are in `dependencies.json`; full license texts are in `LICENSES.txt`.
 
 Outputs:
 
 - `build/Release/ReturnalGyro.dll`: native gyro/mixed-input runtime.
 - `build/loader/Release/version.dll`: forwarding loader.
+- `build/Release/BtHapticsProbe.exe`: development probe for Bluetooth haptics. Not packaged.
 - `dist/ReturnalGyro-1.0.5.zip`: three DLLs plus LICENSES.txt at the archive root. No INI or installer script.
 - `dist/ReturnalGyro-1.0.5-SHA256.json`: hashes of the archive and payload.
 
